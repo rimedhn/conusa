@@ -27,6 +27,7 @@
     .pagos-table td { padding: 2px 4px; border: 1px solid #222; text-align: right; white-space:nowrap; }
     .pagos-table tbody tr:nth-child(even) { background: #fafafa; }
     .pagos-table td.izq, .pagos-table th.izq { text-align: left; white-space:normal; }
+    /* Ajuste de ancho de columnas */
     .pagos-table th.fecha-col, .pagos-table td.fecha-col { width: 9%; }
     .pagos-table th.mes-col, .pagos-table td.mes-col { width: 12%; }
     .pagos-table th.pago-col, .pagos-table td.pago-col { width: 8%; }
@@ -40,10 +41,6 @@
     .pagos-table td.cuota-nivelada, .pagos-table th.cuota-nivelada { background: #ffe385; font-weight: bold; }
     .pagos-table td.saldo-actual { font-weight: bold; color: #e01313; background: #ffe385; }
     .monto-letras { text-align: left; font-weight: bold; font-size: 15px; margin: 3px 0 5px 0; }
-
-    .pagos-table tr.pagado td { color: #0b6b0b; background: #eaffea; }
-    .pagos-table tr.proyectado td { color: #000; background: transparent; }
-
     @media print {
       body, .estado-cuenta-container { background: #fff !important; }
       .estado-cuenta-container { page-break-after: always; }
@@ -63,7 +60,7 @@
         <td>
           <div class="empresa">CONUSA</div>
           <div class="empresa-info">RTN. 07039015782885</div>
-          <div class="empresa-info">Danlí, El Paraíso..</div>
+          <div class="empresa-info">Danlí, El Paraíso.</div>
           <div class="empresa-info">correopendiente@gmail.com Teléfonos: +504 9395-3167</div>
         </td>
       </tr>
@@ -157,14 +154,6 @@
       return dd+"/"+mm+"/"+yyyy;
     }
 
-    function formatDateObjDMY(d){
-      if(!d || !(d instanceof Date)) return "";
-      let dd = d.getDate()>9?d.getDate():"0"+d.getDate();
-      let mm = (d.getMonth()+1)>9?(d.getMonth()+1):"0"+(d.getMonth()+1);
-      let yyyy=d.getFullYear();
-      return dd+"/"+mm+"/"+yyyy;
-    }
-
     function calcularMesAbrevSecuencialDMY(fechaInicialDMY, idx) {
       let fi = parseDateDMY(fechaInicialDMY);
       if (!fi) return "";
@@ -199,7 +188,10 @@
       return String(v).trim();
     }
 
-    function round2(x){ return Math.round((x + Number.EPSILON) * 100) / 100; }
+    function parseYesNoFlag(v){
+      const s = String(v || "").trim().toLowerCase();
+      return s === "si" || s === "sí" || s === "yes" || s === "y" || s === "true" || s === "1";
+    }
 
     async function loadEstadoCuenta() {
       let idprestamo = getQueryParam('idprestamo');
@@ -243,7 +235,7 @@
           return fa - fb;
         });
 
-      // Agrupar por principal + complementos
+      // 1) Identificar principales y complementos
       const principales = [];
       const mapPrincipalesByNo = new Map();
 
@@ -270,6 +262,7 @@
         }
       }
 
+      // 2) Adjuntar complementos al principal referenciado (por No. en columna Complemento)
       const complementosHuerfanos = [];
       for (const ab of abonosPrestamoRaw) {
         const complemento = normalizeComplementoValue(ab.Complemento);
@@ -277,6 +270,7 @@
 
         const principal = mapPrincipalesByNo.get(complemento);
         if (!principal) {
+          // Si no existe principal, se mantiene como fila independiente para no perder datos
           complementosHuerfanos.push(ab);
           continue;
         }
@@ -289,11 +283,13 @@
         principal._sumAbonoCapital += parseNumber(ab["Abono capital"]);
         principal._sumCuota += parseNumber(ab.Cuota);
 
+        // Mantener fecha más reciente del grupo
         const fA = parseDateDMY(principal._fecha);
         const fB = parseDateDMY(ab.Fecha || "");
         if (fB && (!fA || fB > fA)) principal._fecha = ab.Fecha || principal._fecha;
       }
 
+      // 3) Agregar complementos huérfanos como filas individuales
       for (const ab of complementosHuerfanos) {
         principales.push({
           _rows: [ab],
@@ -309,100 +305,51 @@
         });
       }
 
+      // Orden final por fecha
       principales.sort((a,b) => {
         const fa = parseDateDMY(a._fecha) || new Date(0);
         const fb = parseDateDMY(b._fecha) || new Date(0);
         return fa - fb;
       });
 
-      let tasaNum = parseFloat(tasaRaw);
-      let tasaAnualDecimal;
-      if (isNaN(tasaNum) || tasaNum === 0) tasaAnualDecimal = 0;
-      else if (tasaNum > 1) tasaAnualDecimal = tasaNum / 100.0;
-      else tasaAnualDecimal = tasaNum;
-      let tasaMensual = tasaAnualDecimal / 12.0;
-
+      let saldoActual = valorFinanciado;
       let tbody = document.getElementById("detallePagosBody");
       tbody.innerHTML = "";
-
       let fechaAprobado = prestamo.FechaAprobado;
-      let fechaAprobadoDate = parseDateDMY(fechaAprobado);
+      let contadorNo = 0;
 
-      let saldoActual = valorFinanciado;
-      let pagoRealIndex = 0;
+      for (let idx = 0; idx < principales.length; ++idx) {
+        const p = principales[idx];
+        contadorNo += 1;
 
-      for (let mesIdx = 0; mesIdx < plazo; mesIdx++) {
-        let expectedDate = fechaAprobadoDate ? new Date(fechaAprobadoDate.getFullYear(), fechaAprobadoDate.getMonth() + 1 + mesIdx, 1) : null;
-        let fechaMostrarProjected = expectedDate ? formatDateObjDMY(expectedDate) : "";
+        let fechaMostrar = formatFechaDMY(p._fecha);
+        let mesMostrar = calcularMesAbrevSecuencialDMY(fechaAprobado, idx);
 
-        let interesProy = round2(saldoActual * tasaMensual);
-        let cuotaProy = round2(cuotaNivelada);
-        let capitalProy = round2(cuotaProy - interesProy);
+        let pago = p._sumMonto;
+        let capital = p._sumCapital;
+        let interes = p._sumInteres;
+        let cuota = p._sumCuota || p._cuotaObjetivo || 0;
+        let mora = p._sumMora;
+        let abonoCapital = p._sumAbonoCapital;
+        let noCuota = p._no || contadorNo;
 
-        if (mesIdx === plazo - 1) {
-          capitalProy = round2(saldoActual);
-          cuotaProy = round2(interesProy + capitalProy);
-        }
-
-        let assignedPago = principales[pagoRealIndex] || null;
-        let isPaid = false;
-
-        // Solo verde si el total acumulado del pago (incluyendo complementos) alcanza la cuota objetivo
-        if (assignedPago) {
-          const cuotaObjetivo = assignedPago._cuotaObjetivo > 0 ? assignedPago._cuotaObjetivo : cuotaProy;
-          if (round2(assignedPago._sumMonto + 0.0000001) >= round2(cuotaObjetivo)) {
-            isPaid = true;
-          }
-          // Aunque no esté completa, se consume esa cuota real para mostrar avance y no desfasar
-          pagoRealIndex++;
-        }
+        saldoActual -= (capital + abonoCapital);
+        if (Math.abs(saldoActual) < 0.005) saldoActual = 0;
 
         let fila = tbody.insertRow(-1);
-        fila.className = isPaid ? "pagado" : "proyectado";
-
-        let pagoMostrar, fechaMostrar, noCuota, capitalMostrar, interesMostrar, cuotaMostrar, moraMostrar, abonoCapitalMostrar;
-
-        noCuota = mesIdx + 1;
-
-        if (assignedPago) {
-          pagoMostrar = formatCurrency(assignedPago._sumMonto);
-          fechaMostrar = formatFechaDMY(assignedPago._fecha) || fechaMostrarProjected;
-          capitalMostrar = formatCurrency(assignedPago._sumCapital || capitalProy);
-          interesMostrar = formatCurrency(assignedPago._sumInteres || interesProy);
-          cuotaMostrar = formatCurrency((assignedPago._sumCuota || assignedPago._cuotaObjetivo || cuotaProy));
-          moraMostrar = formatCurrency(assignedPago._sumMora || 0);
-          abonoCapitalMostrar = formatCurrency(assignedPago._sumAbonoCapital || 0);
-
-          let capitalNum = (assignedPago._sumCapital || capitalProy);
-          let abonoCapNum = (assignedPago._sumAbonoCapital || 0);
-          saldoActual = round2(saldoActual - (capitalNum + abonoCapNum));
-        } else {
-          pagoMostrar = formatCurrency(cuotaProy);
-          fechaMostrar = fechaMostrarProjected;
-          capitalMostrar = formatCurrency(capitalProy);
-          interesMostrar = formatCurrency(interesProy);
-          cuotaMostrar = formatCurrency(cuotaProy);
-          moraMostrar = formatCurrency(0);
-          abonoCapitalMostrar = formatCurrency(0);
-
-          saldoActual = round2(saldoActual - capitalProy);
-        }
-
-        let saldoMostrar = saldoActual < 0.005 && saldoActual > -0.005 ? 0 : saldoActual;
-
-        fila.insertCell().className = "izq fecha-col"; fila.cells[0].textContent = fechaMostrar || "";
-        fila.insertCell().className = "mes-col"; fila.cells[1].textContent = calcularMesAbrevSecuencialDMY(fechaAprobado, mesIdx);
-        fila.insertCell().className = "pago-col"; fila.cells[2].textContent = pagoMostrar;
+        fila.insertCell().className = "izq fecha-col"; fila.cells[0].textContent = fechaMostrar;
+        fila.insertCell().className = "mes-col"; fila.cells[1].textContent = mesMostrar;
+        fila.insertCell().className = "pago-col"; fila.cells[2].textContent = formatCurrency(pago);
         fila.insertCell().className = "nocol-col"; fila.cells[3].textContent = noCuota;
-        fila.insertCell().className = "capital-col"; fila.cells[4].textContent = capitalMostrar;
-        fila.insertCell().className = "int-col"; fila.cells[5].textContent = interesMostrar;
-        fila.insertCell().className = "cuota-col"; fila.cells[6].textContent = cuotaMostrar;
-        fila.insertCell().className = "mora-col"; fila.cells[7].textContent = moraMostrar;
-        fila.insertCell().className = "abonocap-col"; fila.cells[8].textContent = abonoCapitalMostrar;
-        fila.insertCell().className = "saldo-col saldo-actual"; fila.cells[9].textContent = formatCurrency(saldoMostrar);
+        fila.insertCell().className = "capital-col"; fila.cells[4].textContent = formatCurrency(capital);
+        fila.insertCell().className = "int-col"; fila.cells[5].textContent = formatCurrency(interes);
+        fila.insertCell().className = "cuota-col"; fila.cells[6].textContent = formatCurrency(cuota);
+        fila.insertCell().className = "mora-col"; fila.cells[7].textContent = formatCurrency(mora);
+        fila.insertCell().className = "abonocap-col"; fila.cells[8].textContent = formatCurrency(abonoCapital);
+        fila.insertCell().className = "saldo-col saldo-actual"; fila.cells[9].textContent = formatCurrency(saldoActual);
       }
 
-      if (plazo === 0) {
+      if (principales.length === 0) {
         let fila = tbody.insertRow(0);
         for (let c=0; c<10; c++) fila.insertCell().textContent = '';
         fila.cells[9].className = "saldo-col saldo-actual";
