@@ -27,7 +27,6 @@
     .pagos-table td { padding: 2px 4px; border: 1px solid #222; text-align: right; white-space:nowrap; }
     .pagos-table tbody tr:nth-child(even) { background: #fafafa; }
     .pagos-table td.izq, .pagos-table th.izq { text-align: left; white-space:normal; }
-    /* Ajuste de ancho de columnas */
     .pagos-table th.fecha-col, .pagos-table td.fecha-col { width: 9%; }
     .pagos-table th.mes-col, .pagos-table td.mes-col { width: 12%; }
     .pagos-table th.pago-col, .pagos-table td.pago-col { width: 8%; }
@@ -41,6 +40,10 @@
     .pagos-table td.cuota-nivelada, .pagos-table th.cuota-nivelada { background: #ffe385; font-weight: bold; }
     .pagos-table td.saldo-actual { font-weight: bold; color: #e01313; background: #ffe385; }
     .monto-letras { text-align: left; font-weight: bold; font-size: 15px; margin: 3px 0 5px 0; }
+
+    .pagos-table tr.pagado td { color: #0b6b0b; background: #eaffea; }
+    .pagos-table tr.proyectado td { color: #000; background: transparent; }
+
     @media print {
       body, .estado-cuenta-container { background: #fff !important; }
       .estado-cuenta-container { page-break-after: always; }
@@ -60,7 +63,7 @@
         <td>
           <div class="empresa">CONUSA</div>
           <div class="empresa-info">RTN. 07039015782885</div>
-          <div class="empresa-info">Danlí, El Paraíso.</div>
+          <div class="empresa-info">Danlí, El Paraíso..</div>
           <div class="empresa-info">correopendiente@gmail.com Teléfonos: +504 9395-3167</div>
         </td>
       </tr>
@@ -154,6 +157,14 @@
       return dd+"/"+mm+"/"+yyyy;
     }
 
+    function formatDateObjDMY(d){
+      if(!d || !(d instanceof Date)) return "";
+      let dd = d.getDate()>9?d.getDate():"0"+d.getDate();
+      let mm = (d.getMonth()+1)>9?(d.getMonth()+1):"0"+(d.getMonth()+1);
+      let yyyy=d.getFullYear();
+      return dd+"/"+mm+"/"+yyyy;
+    }
+
     function calcularMesAbrevSecuencialDMY(fechaInicialDMY, idx) {
       let fi = parseDateDMY(fechaInicialDMY);
       if (!fi) return "";
@@ -188,10 +199,7 @@
       return String(v).trim();
     }
 
-    function parseYesNoFlag(v){
-      const s = String(v || "").trim().toLowerCase();
-      return s === "si" || s === "sí" || s === "yes" || s === "y" || s === "true" || s === "1";
-    }
+    function round2(x){ return Math.round((x + Number.EPSILON) * 100) / 100; }
 
     async function loadEstadoCuenta() {
       let idprestamo = getQueryParam('idprestamo');
@@ -235,12 +243,13 @@
           return fa - fb;
         });
 
-      // 1) Identificar principales y complementos
+      // Agrupar por principal + complementos usando idabono <-> Complemento
       const principales = [];
-      const mapPrincipalesByNo = new Map();
+      const mapPrincipalesByIdAbono = new Map();
 
       for (const ab of abonosPrestamoRaw) {
         const no = String(ab.No || "").trim();
+        const idabono = String(ab.idabono || "").trim();
         const complemento = normalizeComplementoValue(ab.Complemento);
         const esComplemento = complemento !== "";
 
@@ -249,6 +258,7 @@
             _rows: [ab],
             _fecha: ab.Fecha || "",
             _no: no,
+            _idabono: idabono,
             _sumMonto: parseNumber(ab.Monto),
             _sumCapital: parseNumber(ab.Capital),
             _sumInteres: parseNumber(ab.Interes),
@@ -258,19 +268,17 @@
             _cuotaObjetivo: parseNumber(ab.Cuota),
           };
           principales.push(item);
-          if (no) mapPrincipalesByNo.set(no, item);
+          if (idabono) mapPrincipalesByIdAbono.set(idabono, item);
         }
       }
 
-      // 2) Adjuntar complementos al principal referenciado (por No. en columna Complemento)
       const complementosHuerfanos = [];
       for (const ab of abonosPrestamoRaw) {
         const complemento = normalizeComplementoValue(ab.Complemento);
         if (!complemento) continue;
 
-        const principal = mapPrincipalesByNo.get(complemento);
+        const principal = mapPrincipalesByIdAbono.get(complemento);
         if (!principal) {
-          // Si no existe principal, se mantiene como fila independiente para no perder datos
           complementosHuerfanos.push(ab);
           continue;
         }
@@ -283,18 +291,17 @@
         principal._sumAbonoCapital += parseNumber(ab["Abono capital"]);
         principal._sumCuota += parseNumber(ab.Cuota);
 
-        // Mantener fecha más reciente del grupo
         const fA = parseDateDMY(principal._fecha);
         const fB = parseDateDMY(ab.Fecha || "");
         if (fB && (!fA || fB > fA)) principal._fecha = ab.Fecha || principal._fecha;
       }
 
-      // 3) Agregar complementos huérfanos como filas individuales
       for (const ab of complementosHuerfanos) {
         principales.push({
           _rows: [ab],
           _fecha: ab.Fecha || "",
           _no: String(ab.No || "").trim(),
+          _idabono: String(ab.idabono || "").trim(),
           _sumMonto: parseNumber(ab.Monto),
           _sumCapital: parseNumber(ab.Capital),
           _sumInteres: parseNumber(ab.Interes),
@@ -305,17 +312,17 @@
         });
       }
 
-      // Orden final por fecha
       principales.sort((a,b) => {
         const fa = parseDateDMY(a._fecha) || new Date(0);
         const fb = parseDateDMY(b._fecha) || new Date(0);
         return fa - fb;
       });
 
-      let saldoActual = valorFinanciado;
       let tbody = document.getElementById("detallePagosBody");
       tbody.innerHTML = "";
+
       let fechaAprobado = prestamo.FechaAprobado;
+      let saldoActual = valorFinanciado;
       let contadorNo = 0;
 
       for (let idx = 0; idx < principales.length; ++idx) {
@@ -333,7 +340,7 @@
         let abonoCapital = p._sumAbonoCapital;
         let noCuota = p._no || contadorNo;
 
-        saldoActual -= (capital + abonoCapital);
+        saldoActual = round2(saldoActual - (capital + abonoCapital));
         if (Math.abs(saldoActual) < 0.005) saldoActual = 0;
 
         let fila = tbody.insertRow(-1);
