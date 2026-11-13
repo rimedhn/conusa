@@ -19,6 +19,7 @@
     .desc-lote-left { width:55%; }
     .desc-lote-right { width:45%; text-align: right; }
     .cuota-saldo-area { width:100%; display:flex; flex-direction: column; align-items: flex-end; margin-bottom:5px; margin-top:6px;}
+    .tasa-line { font-size:14px; color:#333; margin-bottom:4px; }
     .cuota-line { font-size: 16px; font-weight: bold; color: #1D70B7; padding-bottom:2px;}
     .saldo-inicial {font-size:16px; font-weight:bold; color:#d77f00;}
     .pagos-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 0px; }
@@ -33,7 +34,12 @@
     .pagos-table th.cuota-col, .pagos-table td.cuota-col { width: 16%; }
     .pagos-table th.mora-col, .pagos-table td.mora-col { width: 14%; }
     .pagos-table th.saldo-col, .pagos-table td.saldo-col { width: 20%; }
+    .pagos-table td.cuota-nivelada, .pagos-table th.cuota-nivelada { background: #ffe385; font-weight: bold; }
     .pagos-table td.saldo-actual { font-weight: bold; color: #e01313; background: #ffe385; }
+    .monto-letras { text-align: left; font-weight: bold; font-size: 15px; margin: 3px 0 5px 0; }
+
+    .pagos-table tr.pagado td { color: #0b6b0b; background: #eaffea; }
+    .pagos-table tr.proyectado td { color: #000; background: transparent; }
 
     @media print {
       body, .estado-cuenta-container { background: #fff !important; }
@@ -89,6 +95,7 @@
 
     <div class="seccion-titulo" style="margin-top:20px;">Detalle de pagos</div>
     <div class="cuota-saldo-area">
+      <div class="tasa-line">Tasa: <span id="TasaDisplay"></span></div>
       <div class="cuota-line">CUOTA NIVELADA MENSUAL: <span id="CuotaNiveladaCalculo"></span></div>
       <div class="saldo-inicial">SALDO INICIAL: <span id="SaldoInicial"></span></div>
     </div>
@@ -144,6 +151,14 @@
       return dd+"/"+mm+"/"+yyyy;
     }
 
+    function formatDateObjDMY(d){
+      if(!d || !(d instanceof Date)) return "";
+      let dd = d.getDate()>9?d.getDate():"0"+d.getDate();
+      let mm = (d.getMonth()+1)>9?(d.getMonth()+1):"0"+(d.getMonth()+1);
+      let yyyy=d.getFullYear();
+      return dd+"/"+mm+"/"+yyyy;
+    }
+
     function calcularMesAbrevSecuencialDMY(fechaInicialDMY, idx) {
       let fi = parseDateDMY(fechaInicialDMY);
       if (!fi) return "";
@@ -152,6 +167,25 @@
       let nombreMes = mesesAbrev[pagoDate.getMonth()];
       let año = pagoDate.getFullYear();
       return nombreMes + ", " + año;
+    }
+
+    function calcularCuotaNivelada(principal, tasaCampo, plazo){
+      if(principal <= 0 || plazo <= 0) return 0;
+      let tasaNum = parseFloat(tasaCampo);
+      if (isNaN(tasaNum) || tasaNum === 0) return principal / plazo;
+
+      let tasaAnualDecimal;
+      if (tasaNum > 1) tasaAnualDecimal = tasaNum / 100.0;
+      else tasaAnualDecimal = tasaNum;
+
+      let tasaMensual = tasaAnualDecimal / 12.0;
+      let r = tasaMensual;
+      let n = plazo;
+
+      if (r === 0) return principal / n;
+      let pow = Math.pow(1 + r, n);
+      let cuota = principal * (r * pow) / (pow - 1);
+      return cuota;
     }
 
     function normalizeComplementoValue(v){
@@ -175,19 +209,27 @@
 
       let monto = parseNumber(prestamo.Monto);
       let prima = parseNumber(prestamo.Prima);
-      let saldoTotal = monto - prima;
+      let valorFinanciado = monto - prima;
       let plazo = parseInt(prestamo.Plazo) || 0;
-      let cuotaNivelada = plazo > 0 ? saldoTotal / plazo : 0;
+      let tasaRaw = prestamo.Tasa !== undefined && prestamo.Tasa !== "" ? prestamo.Tasa : 0;
+      let cuotaNivelada = calcularCuotaNivelada(valorFinanciado, tasaRaw, plazo);
+
+      // Saldo total = cuotas * plazo (capital + intereses); Total a pagar = saldo total + prima
+      let saldoTotal = round2(cuotaNivelada * plazo);
+      let totalPagar = round2(saldoTotal + prima);
 
       document.getElementById("NombreCliente").textContent = prestamo.NombreCliente || "";
       document.getElementById("NombreComprador").textContent = prestamo.NombreComprador || "";
       document.getElementById("NombreLotificacion").textContent = prestamo.NombreLotificacion || "";
       document.getElementById("NoLoteybloque").textContent = prestamo.NoLoteybloque || "";
-      document.getElementById("Monto").textContent = formatCurrency(monto);
+      document.getElementById("Monto").textContent = formatCurrency(totalPagar);
       document.getElementById("Prima").textContent = formatCurrency(prima);
       document.getElementById("Financiado").textContent = formatCurrency(saldoTotal);
       document.getElementById("PlazoLetras").textContent = (prestamo.Plazo ? prestamo.Plazo + " Meses" : "");
       document.getElementById("FechaAprobado").textContent = formatFechaDMY(prestamo.FechaAprobado);
+
+      let tasaDisplay = (tasaRaw === null || tasaRaw === undefined || String(tasaRaw).trim() === "") ? "0 %" : (String(tasaRaw).trim() + (String(tasaRaw).toString().includes("%") ? "" : " %"));
+      document.getElementById("TasaDisplay").textContent = tasaDisplay;
       document.getElementById("CuotaNiveladaCalculo").textContent = formatCurrency(cuotaNivelada);
       document.getElementById("SaldoInicial").textContent = formatCurrency(saldoTotal);
 
